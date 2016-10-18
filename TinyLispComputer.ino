@@ -1,6 +1,5 @@
-/* Tiny Lisp Computer - uLisp 1.3a
-
-   David Johnson-Davies - www.technoblogy.com - 8th September 2016
+/* Tiny Lisp Computer 2 - uLisp 1.4
+   David Johnson-Davies - www.technoblogy.com - 18th October 2016
     
    Licensed under the MIT license: https://opensource.org/licenses/MIT
 */
@@ -13,6 +12,8 @@
 #define checkoverflow
 #define resetautorun
 // #define printfreespace
+#define serialmonitor
+#define tinylispcomputer
 
 // C Macros
 
@@ -56,14 +57,14 @@ enum stream { SERIALSTREAM, I2CSTREAM, SPISTREAM };
 
 enum function { SYMBOLS, NIL, TEE, LAMBDA, LET, LETSTAR, CLOSURE, SPECIAL_FORMS, QUOTE, DEFUN, DEFVAR,
 SETQ, LOOP, PUSH, POP, INCF, DECF, SETF, DOLIST, DOTIMES, FORMILLIS, WITHI2C, WITHSPI, TAIL_FORMS, PROGN,
-RETURN, IF, COND, WHEN, UNLESS, AND, OR, FUNCTIONS, NOT, NULLFN, CONS, ATOM, LISTP, CONSP, NUMBERP,
-STREAMP, EQ, CAR, FIRST, CDR, REST, CAAR, CADR, SECOND, CDAR, CDDR, CAAAR, CAADR, CADAR, CADDR, THIRD,
-CDAAR, CDADR, CDDAR, CDDDR, LENGTH, LIST, REVERSE, NTH, ASSOC, MEMBER, APPLY, FUNCALL, APPEND, MAPC,
-MAPCAR, ADD, SUBTRACT, MULTIPLY, DIVIDE, MOD, ONEPLUS, ONEMINUS, ABS, RANDOM, MAX, MIN, NUMEQ, LESS,
-LESSEQ, GREATER, GREATEREQ, NOTEQ, PLUSP, MINUSP, ZEROP, ODDP, EVENP, LOGAND, LOGIOR, LOGXOR, LOGNOT,
-ASH, LOGBITP, READ, EVAL, GLOBALS, LOCALS, MAKUNBOUND, BREAK, PRINT, PRINC, WRITEBYTE, READBYTE,
-RESTARTI2C, GC, SAVEIMAGE, LOADIMAGE, CLS, PINMODE, DIGITALREAD, DIGITALWRITE, ANALOGREAD, ANALOGWRITE,
-DELAY, MILLIS, NOTE, ENDFUNCTIONS };
+RETURN, IF, COND, WHEN, UNLESS, AND, OR, FUNCTIONS, NOT, NULLFN, CONS, ATOM, LISTP, CONSP, NUMBERP, 
+STREAMP, EQ, CAR, FIRST, CDR, REST, CAAR, CADR, SECOND, CDAR, CDDR, CAAAR, CAADR, CADAR, CADDR, THIRD, 
+CDAAR, CDADR, CDDAR, CDDDR, LENGTH, LIST, REVERSE, NTH, ASSOC, MEMBER, APPLY, FUNCALL, APPEND, MAPC, 
+MAPCAR, ADD, SUBTRACT, MULTIPLY, DIVIDE, MOD, ONEPLUS, ONEMINUS, ABS, RANDOM, MAX, MIN, NUMEQ, LESS, 
+LESSEQ, GREATER, GREATEREQ, NOTEQ, PLUSP, MINUSP, ZEROP, ODDP, EVENP, LOGAND, LOGIOR, LOGXOR, LOGNOT, 
+ASH, LOGBITP, READ, EVAL, GLOBALS, LOCALS, MAKUNBOUND, BREAK, PRINT, PRINC, WRITEBYTE, READBYTE, 
+RESTARTI2C, GC, ROOM, SAVEIMAGE, LOADIMAGE, CLS, PINMODE, DIGITALREAD, DIGITALWRITE, ANALOGREAD, 
+ANALOGWRITE, DELAY, MILLIS, NOTE, EDIT, ENDFUNCTIONS };
 
 // Typedefs
 
@@ -107,14 +108,16 @@ object *GCStack = NULL;
 char buffer[buflen+1];
 char BreakLevel = 0;
 char LastChar = 0;
+char LastPrint = 0;
 volatile char Escape = 0;
+char ExitEditor = 0;
 
 // Forward references
 object *tee;
 object *tf_progn (object *form, object *env);
 object *eval (object *form, object *env);
 object *read ();
-void repl ();
+void repl(object *env);
 void printobject (object *form);
 char *lookupstring (unsigned int name);
 int lookupfn (unsigned int name);
@@ -1508,7 +1511,7 @@ object *fn_makunbound (object *args, object *env) {
 object *fn_break (object *args, object *env) {
   (void) args;
   pln();
-  pfstring(F("Break!"));pln();
+  pfstring(F("Break!")); pln();
   BreakLevel++;
   repl(env);
   BreakLevel--;
@@ -1556,7 +1559,7 @@ object *fn_readbyte (object *args, object *env) {
     if (i2cCount >= 0) i2cCount--;
     return number(I2Cread((i2cCount == 0) || last));
   } else if (stream>>8 == SPISTREAM) return number(SPI.transfer(0));
-  else if (stream == SERIALSTREAM<<8) return number(Getc());
+  else if (stream == SERIALSTREAM<<8) return number(gchar());
   else error(F("'read-byte' unknown stream type"));
   return nil;
 }
@@ -1590,6 +1593,12 @@ object *fn_gc (object *obj, object *env) {
   pint(micros() - start);
   pfstring(F(" uS")); pln();
   return nil;
+}
+
+object *fn_room (object *args, object *env) {
+  (void) args;
+  (void) env;
+  return number(freespace);
 }
 
 object *fn_saveimage (object *args, object *env) {
@@ -1740,6 +1749,34 @@ object *fn_note (object *args, object *env) {
   return nil;
 }
 
+// Tree Editor
+
+object *fn_edit (object *args, object *env) {
+  object *fun = first(args);
+  object *pair = findvalue(fun, env);
+  ExitEditor = 0;
+  object *arg = edit(eval(fun, env));
+  cdr(pair) = arg;
+  return arg;
+}
+
+object *edit(object *fun) {
+  while (1) {
+    if (ExitEditor) return fun;
+    char c = gchar();
+    if (c == 'q') ExitEditor = 1;
+    else if (c == 'b') return fun;
+    else if (c == 'r') fun = read();
+    else if (c == 13) { printobject(fun); pln(); }
+    else if (c == 'c') fun = cons(read(), fun);
+    else if (!consp(fun)) pchar('!');
+    else if (c == 'd') fun = cons(car(fun), edit(cdr(fun)));
+    else if (c == 'a') fun = cons(edit(car(fun)), cdr(fun));
+    else if (c == 'x') fun = cdr(fun);
+    else pchar('?');
+  }
+}
+
 // Insert your own function definitions here
 
 
@@ -1856,17 +1893,19 @@ const char string107[] PROGMEM = "write-byte";
 const char string108[] PROGMEM = "read-byte";
 const char string109[] PROGMEM = "restart-i2c";
 const char string110[] PROGMEM = "gc";
-const char string111[] PROGMEM = "save-image";
-const char string112[] PROGMEM = "load-image";
-const char string113[] PROGMEM = "cls";
-const char string114[] PROGMEM = "pinmode";
-const char string115[] PROGMEM = "digitalread";
-const char string116[] PROGMEM = "digitalwrite";
-const char string117[] PROGMEM = "analogread";
-const char string118[] PROGMEM = "analogwrite";
-const char string119[] PROGMEM = "delay";
-const char string120[] PROGMEM = "millis";
-const char string121[] PROGMEM = "note";
+const char string111[] PROGMEM = "room";
+const char string112[] PROGMEM = "save-image";
+const char string113[] PROGMEM = "load-image";
+const char string114[] PROGMEM = "cls";
+const char string115[] PROGMEM = "pinmode";
+const char string116[] PROGMEM = "digitalread";
+const char string117[] PROGMEM = "digitalwrite";
+const char string118[] PROGMEM = "analogread";
+const char string119[] PROGMEM = "analogwrite";
+const char string120[] PROGMEM = "delay";
+const char string121[] PROGMEM = "millis";
+const char string122[] PROGMEM = "note";
+const char string123[] PROGMEM = "edit";
 
 const tbl_entry_t lookup_table[] PROGMEM = {
   { string0, NULL, NIL, NIL },
@@ -1980,17 +2019,19 @@ const tbl_entry_t lookup_table[] PROGMEM = {
   { string108, fn_readbyte, 0, 2 },
   { string109, fn_restarti2c, 1, 2 },
   { string110, fn_gc, 0, 0 },
-  { string111, fn_saveimage, 0, 1 },
-  { string112, fn_loadimage, 0, 0 },
-  { string113, fn_cls, 0, 0 },
-  { string114, fn_pinmode, 2, 2 },
-  { string115, fn_digitalread, 1, 1 },
-  { string116, fn_digitalwrite, 2, 2 },
-  { string117, fn_analogread, 1, 1 },
-  { string118, fn_analogwrite, 2, 2 },
-  { string119, fn_delay, 1, 1 },
-  { string120, fn_millis, 0, 0 },
-  { string121, fn_note, 0, 3 },
+  { string111, fn_room, 0, 0 },
+  { string112, fn_saveimage, 0, 1 },
+  { string113, fn_loadimage, 0, 0 },
+  { string114, fn_cls, 0, 0 },
+  { string115, fn_pinmode, 2, 2 },
+  { string116, fn_digitalread, 1, 1 },
+  { string117, fn_digitalwrite, 2, 2 },
+  { string118, fn_analogread, 1, 1 },
+  { string119, fn_analogwrite, 2, 2 },
+  { string120, fn_delay, 1, 1 },
+  { string121, fn_millis, 0, 0 },
+  { string122, fn_note, 0, 3 },
+  { string123, fn_edit, 1, 1 },
 };
 
 // Table lookup functions
@@ -2032,6 +2073,9 @@ object *eval (object *form, object *env) {
   if (_end != 0xA5) error(F("Stack overflow"));
   // Escape
   if (Escape) { Escape = 0; error(F("Escape!"));}
+  #if defined (serialmonitor)
+  if (Serial.read() == '~') error(F("Escape!"));
+  #endif
   
   if (form == NULL) return nil;
 
@@ -2150,7 +2194,14 @@ object *eval (object *form, object *env) {
 // Print functions
 
 void pchar (char c) {
+  LastPrint = c;
+  #if defined (tinylispcomputer)
   Display(c);
+  #endif
+  #if defined (serialmonitor)
+  Serial.write(c);
+  if (c == '\r') Serial.write('\n');
+  #endif
 }
 
 void pstring (char *s) {
@@ -2177,7 +2228,7 @@ void pint (int i) {
 }
 
 void pln () {
-  pchar('\r'); pchar('\n');
+  pchar('\r');
 }
 
 void printobject(object *form){
@@ -2216,33 +2267,58 @@ void printobject(object *form){
     error(F("Error in print."));
 }
 
+#if defined (tinylispcomputer)
 volatile uint8_t WritePtr = 0, ReadPtr = 0;
-volatile uint8_t KybdAvailable = 0;
-const int KybdBufSize = 168;
+const int KybdBufSize = 165;
 char KybdBuf[KybdBufSize];
+volatile uint8_t KybdAvailable = 0;
+#endif
 
-int Getc () {
+int gchar () {
   if (LastChar) { 
     char temp = LastChar;
     LastChar = 0;
     return temp;
   }
+  #if defined (serialmonitor) && defined (tinylispcomputer)
+  while (!Serial.available() && !KybdAvailable);
+  if (Serial.available()) {
+    char temp = Serial.read();
+    if (temp != '\r') pchar(temp);
+    return temp;
+  } else {
+    if (ReadPtr != WritePtr) {
+      char temp = KybdBuf[ReadPtr++];
+      Serial.write(temp);
+      return temp;
+    }
+    KybdAvailable = 0;
+    WritePtr = 0;
+    return 13;
+  }
+  #elif defined (tinylispcomputer)
   while (!KybdAvailable);
   if (ReadPtr != WritePtr) return KybdBuf[ReadPtr++];
   KybdAvailable = 0;
   WritePtr = 0;
-  return 13;
+  return '\r';
+  #elif defined (serialmonitor)
+  while (!Serial.available());
+  char temp = Serial.read();
+  if (temp != '\r') pchar(temp);
+  return temp;
+  #endif
 }
 
 object *nextitem() {
-  int ch = Getc();
-  while(isspace(ch)) ch = Getc();
+  int ch = gchar();
+  while(isspace(ch)) ch = gchar();
 
   if (ch == ';') {
-    while(ch != '(') ch = Getc();
+    while(ch != '(') ch = gchar();
     ch = '(';
   }
-  if (ch == '\r') ch = Getc();
+  if (ch == '\r') ch = gchar();
   if (ch == EOF) exit(0);
 
   if (ch == ')') return (object *)KET;
@@ -2255,18 +2331,18 @@ object *nextitem() {
   unsigned int result = 0;
   if (ch == '+') {
     buffer[index++] = ch;
-    ch = Getc();
+    ch = gchar();
   } else if (ch == '-') {
     sign = -1;
     buffer[index++] = ch;
-    ch = Getc();
+    ch = gchar();
   } else if (ch == '#') {
-    ch = Getc() | 0x20;
+    ch = gchar() | 0x20;
     if (ch == 'b') base = 2;
     else if (ch == 'o') base = 8;
     else if (ch == 'x') base = 16;
     else error(F("Illegal character after #"));
-    ch = Getc();
+    ch = gchar();
   }
   int isnumber = (digitvalue(ch)<base);
   buffer[2] = '\0'; // In case variable is one letter
@@ -2276,7 +2352,7 @@ object *nextitem() {
     int temp = digitvalue(ch);
     result = result * base + temp;
     isnumber = isnumber && (digitvalue(ch)<base);
-    ch = Getc();
+    ch = gchar();
   }
 
   buffer[index] = '\0';
@@ -2330,17 +2406,30 @@ void initenv() {
   tee = symbol(TEE);
 }
 
-// Terminal
+#if defined (tinylispcomputer)
+// Tiny Lisp Computer terminal and keyboard support
 
 int const SH1106 = 0;     // Set to 0 for SSD1306 or 1 for SH1106
 
-int const datapin = 8;    // Arduino pin
-int const data = 0;       // Bit in PORTB
+// Support both ATmega328P and ATmega644P/ATmega1284P
+#if defined(__AVR_ATmega328P__)
+#define PINX PIND
+#define PORTDAT PORTB
+int const data = 0;
+#define KEYBOARD_VECTOR INT0_vect
+#elif defined(__AVR_ATmega644P__) || defined(__AVR_ATmega1284P__)
+#define PINX PINC
+#define PORTDAT PORTC
+int const data = 4;
+#define KEYBOARD_VECTOR INT2_vect
+#endif
 
-// These are the same as their positions in PORTD
+// These are the bit positions in PORTX
 int const clk = 7;
 int const dc = 6;
 int const cs = 5;
+
+// Terminal **********************************************************************************
 
 // Character set - stored in program memory
 const uint8_t CharMap[96][6] PROGMEM = {
@@ -2370,8 +2459,8 @@ const uint8_t CharMap[96][6] PROGMEM = {
 { 0x41, 0x21, 0x11, 0x09, 0x07, 0x00 }, 
 { 0x36, 0x49, 0x49, 0x49, 0x36, 0x00 }, 
 { 0x46, 0x49, 0x49, 0x29, 0x1E, 0x00 }, 
-{ 0x00, 0x00, 0x14, 0x00, 0x00, 0x00 }, 
-{ 0x00, 0x40, 0x34, 0x00, 0x00, 0x00 }, 
+{ 0x00, 0x36, 0x36, 0x00, 0x00, 0x00 }, 
+{ 0x00, 0x56, 0x36, 0x00, 0x00, 0x00 }, 
 { 0x00, 0x08, 0x14, 0x22, 0x41, 0x00 }, 
 { 0x14, 0x14, 0x14, 0x14, 0x14, 0x00 }, 
 { 0x00, 0x41, 0x22, 0x14, 0x08, 0x00 }, 
@@ -2472,34 +2561,39 @@ unsigned char Init[InitLen] = {
 
 // Write a data byte to the display
 void Data (uint8_t d) {  
-  PIND = 1<<cs; // cs low
+  PINX = 1<<cs; // cs low
   for (uint8_t bit = 0x80; bit; bit >>= 1) {
-    PIND = 1<<clk; // clk low
-    if (d & bit) PORTB = PORTB | (1<<data); else PORTB = PORTB & ~(1<<data);
-    PIND = 1<<clk; // clk high
+    PINX = 1<<clk; // clk low
+    if (d & bit) PORTDAT = PORTDAT | (1<<data); else PORTDAT = PORTDAT & ~(1<<data);
+    PINX = 1<<clk; // clk high
   }
-  PIND = 1<<cs; // cs high
+  PINX = 1<<cs; // cs high
 }
 
 // Write a command byte to the display
 void Command (uint8_t c) { 
-  PIND = 1<<dc; // dc low
+  PINX = 1<<dc; // dc low
   Data(c);
-  PIND = 1<<dc; // dc high
+  PINX = 1<<dc; // dc high
 }
 
 void InitDisplay () {
   // Define pins
-  pinMode(dc, OUTPUT); digitalWrite(dc,HIGH);
-  pinMode(clk, OUTPUT); digitalWrite(clk,HIGH);
-  pinMode(datapin, OUTPUT);
-  pinMode(cs, OUTPUT); digitalWrite(cs,HIGH);
+#if defined(__AVR_ATmega328P__)
+  DDRD = DDRD | 1<<clk | 1<<dc | 1<<cs;     // All outputs
+  PORTD = PORTD | 1<<clk | 1<<dc | 1<<cs;   // All high
+  DDRB = DDRB | 1<<data;                    // Output
+#elif defined(__AVR_ATmega644P__) || defined(__AVR_ATmega1284P__)
+  DDRC = DDRC | 1<<clk | 1<<dc | 1<<cs;     // All outputs
+  PORTC = PORTC | 1<<clk | 1<<dc | 1<<cs;   // All high
+  DDRC = DDRC | 1<<data;                    // Output
+#endif
   for (uint8_t c=0; c<InitLen; c++) Command(Init[c]);
   Display(12);    // Clear display
   Command(0xAF);  // Display on
 }
 
-// Character terminal **********************************************
+// Character terminal
 
 void ClearLine (uint8_t line) {
   Command(0xB0 + line);
@@ -2523,51 +2617,61 @@ void PlotChar (char c, uint8_t line, uint8_t column) {
   Command(0x00 + (column & 0x0F)); // Column start low
   Command(0x10 + (column >> 4));   // Column start high
   for (uint8_t col = 0; col < 6; col++) {
-    Data(pgm_read_byte(&CharMap[(c & 0x7F)-32][col]));
+    Data(pgm_read_byte(&CharMap[(c & 0x7F)-32][col]) ^ (c & 0x80 ? 0xFF : 0));
   }
 }
 
 // Prints a character to display, with cursor, handling control characters
 void Display (char c) {
   static uint8_t Line = 0, Column = 0, Scroll = 0;
+  // These characters don't affect the cursor
+  if (c == 8) {                    // Backspace
+    if (Column == 0) {
+      Line--; Column = 20;
+    } else Column--;
+    return;
+  }
+  if (c == 9) {                    // Cursor forward
+    if (Column == 20) {
+      Line++; Column = 0;
+    } else Column++;
+    return;
+  }
+  if ((c >= 17) && (c <= 20)) {    // Parentheses
+    if (c == 17) PlotChar('(', Line+Scroll, Column);
+    else if (c == 18) PlotChar('(' | 0x80, Line+Scroll, Column);
+    else if (c == 19) PlotChar(')', Line+Scroll, Column);
+    else PlotChar(')' | 0x80, Line+Scroll, Column);
+    return;
+  }
   // Hide cursor
   PlotChar(' ', Line+Scroll, Column);
-  if (c >= 32) {                  // Normal character
+  if (c == 0x7F) {                 // DEL
+    if (Column == 0) {
+      Line--; Column = 20;
+    } else Column--;
+  } else if ((c & 0x7f) >= 32) {   // Normal character
     PlotChar(c, Line+Scroll, Column++);
     if (Column > 20) {
       Column = 0;
       if (Line == 7) ScrollDisplay(&Scroll); else Line++;
     }
   // Control characters
-  } else if (c == 8) {             // Backspace
-    if (Column == 0) {
-      Line--;
-      Column = 20;
-    } else Column--;
-  } else if (c == 9) {             // Cursor forward
-    if (Column == 20) {
-      Line++;
-      Column = 0;
-    } else Column++;
   } else if (c == 12) {            // Clear display
     for (uint8_t p=0; p < 8; p++) ClearLine(p);
-    Line = 0;
-    Column = 0;
-  } else if (c == 13) {            // Return
+    Line = 0; Column = 0;
+  } else if (c == '\r') {            // Return
     Column = 0;
     if (Line == 7) ScrollDisplay(&Scroll); else Line++;
-  }
+  } 
   // Show cursor
   PlotChar(0x7F, Line+Scroll, Column);
 }
 
-// Keyboard
+// Keyboard **********************************************************************************
 
 const int KeymapSize = 132;
 const int Cursor = 0x7F;
-
-const int DataPin = 4;
-const int IRQpin =  2;
 
 const char Keymap[] PROGMEM = 
 // Without shift
@@ -2577,10 +2681,25 @@ const char Keymap[] PROGMEM =
 "             \011~      Q!   ZSAW@  CXDE$#   VFTR%  NBHGY^   MJU&*  <KIO)("
 "  >?L:P_   \" {+    \015} |        \010  1 47   0.2568\033  +3-*9       ";
 
-ISR(INT0_vect) {
-  static uint8_t Break = 0, Modifier = 0, Shift = 0;
+// Parenthesis highlighting
+void Highlight (uint8_t p, uint8_t invert) {
+  if (p) {
+    for (int n=0; n < p; n++) Display(8);
+    Display(17 + invert);
+    for (int n=1; n < p; n++) Display(9);
+    Display(19 + invert);
+    Display(9);
+  }
+} 
+  
+ISR(KEYBOARD_VECTOR) {
+  static uint8_t Break = 0, Modifier = 0, Shift = 0, Parenthesis = 0;
   static int ScanCode = 0, ScanBit = 1;
+#if defined(__AVR_ATmega328P__)
   if (PIND & 1<<PIND4) ScanCode = ScanCode | ScanBit;
+#elif defined(__AVR_ATmega644P__) || defined(__AVR_ATmega1284P__)
+  if (PINB & 1<<PINB1) ScanCode = ScanCode | ScanBit;
+#endif  
   ScanBit = ScanBit << 1;
   if (ScanBit != 0x800) return;
   // Process scan code
@@ -2599,9 +2718,13 @@ ISR(INT0_vect) {
   if (Modifier) return;
   char c = pgm_read_byte(&Keymap[s + KeymapSize*Shift]);
   if (c == 32 && s != 0x29) return;
+  if (c == 27) { Escape = 1; return; }    // Escape key
+  // Undo previous parenthesis highlight
+  Highlight(Parenthesis, 0);
+  Parenthesis = 0;  
   // Edit buffer
-  if (c == 13) {
-    Display(13);
+  if (c == '\r') {
+    pchar('\r');
     KybdAvailable = 1;
     ReadPtr = 0;
     return;
@@ -2609,34 +2732,58 @@ ISR(INT0_vect) {
   if (c == 8) {     // Backspace key
     if (WritePtr > 0) {
       WritePtr--;
-      Display(8);
+      Display(0x7F);
+      if (WritePtr) c = KybdBuf[WritePtr-1];
     }
-    return;
+  } else if (WritePtr < KybdBufSize) {
+    KybdBuf[WritePtr++] = c;
+    Display(c);
   }
-  if (c == 27) { Escape = 1; return; }    // Escape key
-  if (WritePtr == KybdBufSize) return;    // Buffer full
-  KybdBuf[WritePtr++] = c;
-  Display(c);
+  // Do new parenthesis highlight
+  if (c == ')') {
+    int search = WritePtr-1, level = 0;
+    while (search >= 0 && Parenthesis == 0) {
+      c = KybdBuf[search--];
+      if (c == ')') level++;
+      if (c == '(') {
+        level--;
+        if (level == 0) Parenthesis = WritePtr-search-1;
+      }
+    }
+    Highlight(Parenthesis, 1);
+  }
   return;
 }
 
 void InitKybd() {
-  EICRA = 2<<ISC00;                       // Falling edge
+#if defined(__AVR_ATmega328P__)
+  EICRA = 2<<ISC00;                       // Falling edge INT0
   PORTD = PORTD | 1<<PORTD4 | 1<<PORTD2;  // Enable pullups
   EIMSK = EIMSK | 1<<INT0;                // Enable interrupt
+#elif defined(__AVR_ATmega644P__) || defined(__AVR_ATmega1284P__)
+  EICRA = 2<<ISC20;                       // Falling edge INT2
+  PORTB = PORTB | 1<<PORTB2 | 1<<PORTB1;  // Enable pullups
+  EIMSK = EIMSK | 1<<INT2;                // Enable interrupt
+#endif  
 }
+
+#endif
 
 // Setup
 
 void setup() {
+  #if defined (tinylispcomputer)
   InitDisplay();
   InitKybd();
-  // Serial.begin(9600);
-  // while (!Serial);  // wait for Serial to initialize
+  #endif
+  #if defined (serialmonitor)
+  Serial.begin(9600);
+  while (!Serial);  // wait for Serial to initialize
+  #endif
   initworkspace();
   initenv();
-  _end = 0xA5;
-  pfstring(F("uLisp 1.3a"));pln();
+  _end = 0xA5;      // Canary to check stack
+  pfstring(F("uLisp 1.4")); pln();
 }
 
 // Read/Evaluate/Print loop
@@ -2657,7 +2804,10 @@ void repl(object *env) {
     if (BreakLevel && line == nil) { pln(); return; }
     if (line == (object *)KET) error(F("Unmatched right bracket"));
     push(line, GCStack);
-    printobject(eval(line,env));
+    if (LastPrint != '\r') pln();
+    line = eval(line, env);
+    if (LastPrint != '\r') pln();
+    printobject(line);
     pop(GCStack);
     pln();
     pln();
